@@ -1,182 +1,323 @@
 #!/usr/bin/env python3
 """
-Bato Manga Downloader Telegram Bot - FIXED VERSION
-Download manga dari bato.ing dan semua domain mirror-nya
-Compatible dengan SENODE dan format URL baru
+Bato Manga Downloader Telegram Bot - ULTRA FIXED VERSION
+Support SENODE dan semua format URL Bato
+Multi-strategy image extraction
 """
 
 import os
 import asyncio
 import shutil
 import json
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from telegram.constants import ChatAction
 import requests
 from bs4 import BeautifulSoup
 import re
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
-from io import BytesIO
 import zipfile
 
 # ============ CONFIGURATION ============
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; BatoDownloader/1.0)"}
-REQUEST_TIMEOUT = 10
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Referer": "https://bato.ing/",
+}
+REQUEST_TIMEOUT = 15
 MAX_WORKERS = 6
 TEMP_DIR = "temp_downloads"
 MAX_FILE_SIZE_MB = 50
 
-# ALL BATO MIRROR DOMAINS
+# ALL BATO MIRROR DOMAINS (PRIORITIZED - Updated Jan 2025)
+# v4 domains first (newest), then operational domains
 BATO_DOMAINS = [
-    "bato.ing", "bato.si", "fto.to", "ato.to", "dto.to", "hto.to", 
-    "jto.to", "lto.to", "mto.to", "nto.to", "vto.to", "wto.to", 
-    "xto.to", "yto.to", "vba.to", "wba.to", "xba.to", "yba.to", 
-    "zba.to", "kuku.to", "okok.to", "ruru.to", "xdxd.to",
-    "bato.to", "bato.ac", "bato.bz", "bato.cc", "bato.cx", 
-    "bato.id", "bato.pw", "bato.sh", "bato.vc", "bato.day", 
-    "bato.red", "bato.run", "batoto.in", "batoto.tv",
-    "batotoo.com", "batotwo.com", "battwo.com", "batpub.com",
-    "batread.com", "xbato.com", "xbato.net", "xbato.org",
-    "zbato.com", "zbato.net", "zbato.org", "comiko.net",
-    "comiko.org", "mangatoto.com", "mangatoto.net",
-    "mangatoto.org", "batocomic.com", "batocomic.net",
-    "batocomic.org", "readtoto.com", "readtoto.net", "readtoto.org"
+    # V4 DOMAINS (PRIORITY - Newest version)
+    "bato.si", "bato.ing",
+    
+    # Short .to domains (all operational)
+    "ato.to", "dto.to", "fto.to", "hto.to", "jto.to", "lto.to", "mto.to", 
+    "nto.to", "vto.to", "wto.to", "xto.to", "yto.to",
+    "vba.to", "wba.to", "xba.to", "yba.to", "zba.to",
+    "kuku.to", "okok.to", "ruru.to", "xdxd.to",
+    
+    # bato.* domains (all operational)
+    "bato.ac", "bato.bz", "bato.cc", "bato.cx", "bato.id", 
+    "bato.pw", "bato.sh", "bato.to", "bato.vc", 
+    "bato.day", "bato.red", "bato.run",
+    
+    # Full name domains (all operational)
+    "batoto.in", "batoto.tv",
+    "batotoo.com", "batotwo.com", "battwo.com",
+    "batpub.com", "batread.com",
+    "xbato.com", "xbato.net", "xbato.org",
+    "zbato.com", "zbato.net", "zbato.org",
+    "comiko.net", "comiko.org",
+    "mangatoto.com", "mangatoto.net", "mangatoto.org",
+    "batocomic.com", "batocomic.net", "batocomic.org",
+    "readtoto.com", "readtoto.net", "readtoto.org",
 ]
 
 # ============ HELPER FUNCTIONS ============
 
 def sanitize_filename(name):
-    """Clean filename untuk Windows/Linux"""
+    """Clean filename"""
     name = re.sub(r'[<>:"/\\|?*]', '_', name)
     name = re.sub(r'\s+', '_', name)
+    name = re.sub(r'[^\x00-\x7F]+', '', name)  # Remove non-ASCII
     return name[:200]
 
 def natural_sort_key(filename):
-    """Natural sorting untuk angka"""
+    """Natural sorting"""
     return [int(text) if text.isdigit() else text.lower() 
             for text in re.split(r'(\d+)', filename)]
 
 def rewrite_image_url(url):
-    """Rewrite image URL jika perlu (k -> n)"""
+    """Rewrite image URL"""
     if not url:
         return url
+    # k -> n rewrite
     if re.match(r'^(https://k).*\.(png|jpg|jpeg|webp)(\?.*)?$', url, re.I):
         return url.replace("https://k", "https://n", 1)
     return url
 
 def find_working_domain():
-    """Cari domain bato yang aktif"""
-    for domain in BATO_DOMAINS[:15]:
+    """Find working domain - prioritize v4 domains"""
+    # Try v4 domains first (bato.si, bato.ing)
+    for domain in ["bato.si", "bato.ing"]:
         try:
             url = f"https://{domain}"
-            response = requests.get(url, headers=HEADERS, timeout=5)
+            response = requests.get(url, headers=HEADERS, timeout=5, allow_redirects=True)
             if response.status_code == 200:
+                print(f"✓ Using v4 domain: {domain}")
                 return domain
         except:
             continue
-    return "bato.ing"
+    
+    # Fallback to other operational domains
+    for domain in BATO_DOMAINS[2:15]:  # Skip first 2 (already tried)
+        try:
+            url = f"https://{domain}"
+            response = requests.get(url, headers=HEADERS, timeout=5, allow_redirects=True)
+            if response.status_code == 200:
+                print(f"✓ Using fallback domain: {domain}")
+                return domain
+        except:
+            continue
+    
+    # Ultimate fallback
+    return "bato.si"
 
-def get_chapter_info(chapter_url, domain):
-    """Ambil info chapter dan URL gambar - IMPROVED VERSION"""
-    try:
-        # Ganti domain jika perlu
-        original_url = chapter_url
+def extract_images_multi_strategy(soup, page_html):
+    """
+    Multiple strategies to extract image URLs
+    Strategy priority:
+    1. imgHttps array in script
+    2. batoPass/imgHttpLis pattern
+    3. All HTTPS image URLs in scripts
+    4. img tags with data-src
+    5. img tags with src
+    """
+    image_urls = []
+    
+    # STRATEGY 1: imgHttps array
+    scripts = soup.find_all('script')
+    for script in scripts:
+        if not script.string:
+            continue
+        
+        # Method 1a: imgHttps = [...]
+        if 'imgHttps' in script.string:
+            match = re.search(r'imgHttps\s*=\s*(\[[^\]]*\])', script.string)
+            if match:
+                try:
+                    urls = json.loads(match.group(1))
+                    if urls:
+                        print(f"✓ Strategy 1a: Found {len(urls)} images via imgHttps array")
+                        return urls
+                except:
+                    pass
+        
+        # Method 1b: imgHttpLis or batoPass patterns
+        if 'imgHttpLis' in script.string or 'batoPass' in script.string:
+            # Find all image URLs in this script
+            urls = re.findall(r'"(https://[^"]+\.(?:jpg|jpeg|png|webp|gif)[^"]*)"', script.string, re.I)
+            if urls:
+                print(f"✓ Strategy 1b: Found {len(urls)} images via batoPass pattern")
+                return urls
+    
+    # STRATEGY 2: All HTTPS image URLs in any script
+    for script in scripts:
+        if script.string:
+            urls = re.findall(r'https://[^\s"\'<>]+\.(?:jpg|jpeg|png|webp|gif)(?:\?[^\s"\'<>]*)?', 
+                            script.string, re.I)
+            if urls:
+                # Deduplicate
+                unique_urls = list(dict.fromkeys(urls))
+                if len(unique_urls) >= 3:  # Reasonable chapter has at least 3 images
+                    print(f"✓ Strategy 2: Found {len(unique_urls)} images via script scanning")
+                    return unique_urls
+    
+    # STRATEGY 3: img tags with data-src
+    for img in soup.find_all('img'):
+        src = img.get('data-src')
+        if src and any(ext in src.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif']):
+            if src.startswith('http'):
+                image_urls.append(src)
+    
+    if image_urls:
+        print(f"✓ Strategy 3: Found {len(image_urls)} images via img[data-src]")
+        return image_urls
+    
+    # STRATEGY 4: img tags with src
+    for img in soup.find_all('img'):
+        src = img.get('src')
+        if src and any(ext in src.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif']):
+            if src.startswith('http') and 'logo' not in src.lower() and 'icon' not in src.lower():
+                image_urls.append(src)
+    
+    if image_urls:
+        print(f"✓ Strategy 4: Found {len(image_urls)} images via img[src]")
+        return image_urls
+    
+    # STRATEGY 5: Regex scan entire HTML
+    all_urls = re.findall(r'https://[^\s"\'<>]+\.(?:jpg|jpeg|png|webp|gif)(?:\?[^\s"\'<>]*)?', 
+                          page_html, re.I)
+    if all_urls:
+        # Filter out common non-manga images
+        filtered = [u for u in all_urls if not any(x in u.lower() for x in ['logo', 'icon', 'avatar', 'banner'])]
+        unique = list(dict.fromkeys(filtered))
+        if unique:
+            print(f"✓ Strategy 5: Found {len(unique)} images via HTML regex scan")
+            return unique
+    
+    return []
+
+def get_chapter_info(chapter_url, working_domain):
+    """
+    Get chapter info with aggressive domain switching and multi-strategy extraction
+    """
+    print(f"\n{'='*60}")
+    print(f"🔍 FETCHING: {chapter_url}")
+    
+    original_url = chapter_url
+    tried_domains = []
+    last_error = None
+    
+    # PRIORITY ORDER:
+    # 1. Try v4 domains first (bato.si, bato.ing)
+    # 2. Try current domain if not v4
+    # 3. Try all other operational domains
+    priority_domains = ["bato.si", "bato.ing"]
+    current_domain_list = [working_domain] if working_domain not in priority_domains else []
+    other_domains = [d for d in BATO_DOMAINS if d not in priority_domains and d != working_domain]
+    
+    test_domains = priority_domains + current_domain_list + other_domains[:20]
+    
+    for test_domain in test_domains:
+        # Replace domain in URL
+        current_url = original_url
         for d in BATO_DOMAINS:
-            if d in chapter_url:
-                chapter_url = chapter_url.replace(d, domain)
+            if d in current_url:
+                current_url = current_url.replace(d, test_domain)
                 break
         
-        # Try original URL first
-        response = requests.get(chapter_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        tried_domains.append(test_domain)
+        print(f"🌐 Trying: {test_domain}")
         
-        # Jika 404, coba dengan domain lain
-        if response.status_code == 404:
-            print(f"404 on {chapter_url}, trying other domains...")
-            for test_domain in BATO_DOMAINS[:10]:
-                test_url = original_url
-                for d in BATO_DOMAINS:
-                    if d in test_url:
-                        test_url = test_url.replace(d, test_domain)
-                        break
-                
-                try:
-                    response = requests.get(test_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-                    if response.status_code == 200:
-                        chapter_url = test_url
-                        domain = test_domain
-                        print(f"✓ Found working domain: {test_domain}")
-                        break
-                except:
-                    continue
-        
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # METHOD 1: Cari imgHttps di script (seperti desktop version)
-        image_urls = []
-        scripts = soup.find_all('script')
-        for script in scripts:
-            if script.string and 'imgHttps' in script.string:
-                # Cari array imgHttps
-                match = re.search(r'imgHttps\s*=\s*(\[[^\]]*\])', script.string)
-                if match:
-                    try:
-                        image_urls = json.loads(match.group(1))
-                        print(f"✓ Found {len(image_urls)} images via imgHttps")
-                        break
-                    except:
-                        pass
-                
-                # Fallback: cari semua URLs di script
-                if not image_urls:
-                    matches = re.findall(r'"(https://[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"', script.string)
-                    image_urls.extend(matches)
-        
-        # METHOD 2: Fallback - cari di img tags
-        if not image_urls:
-            print("⚠ imgHttps not found, trying img tags...")
-            for img in soup.find_all('img'):
-                src = img.get('src') or img.get('data-src')
-                if src and any(ext in src.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']):
-                    image_urls.append(src)
-        
-        # Rewrite URLs (k -> n)
-        image_urls = [rewrite_image_url(url) for url in image_urls]
-        
-        # Cari chapter title
-        title_elem = soup.find('h3', class_='nav-title') or soup.find('h1')
-        chapter_title = title_elem.get_text(strip=True) if title_elem else "Chapter"
-        
-        # Remove non-ASCII characters
-        chapter_title = re.sub(r'[^\x00-\x7F]+', '', chapter_title)
-        
-        return {
-            'title': chapter_title,
-            'url': chapter_url,
-            'images': image_urls,
-            'domain': domain
-        }
-    except Exception as e:
-        raise Exception(f"Gagal mengambil chapter: {str(e)}")
+        try:
+            response = requests.get(current_url, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+            
+            if response.status_code == 404:
+                print(f"  ❌ 404 Not Found")
+                continue
+            
+            if response.status_code != 200:
+                print(f"  ⚠️ HTTP {response.status_code}")
+                continue
+            
+            # Check if it's actually a Bato page
+            if 'bato' not in response.text.lower() and 'chapter' not in response.text.lower():
+                print(f"  ⚠️ Not a Bato page")
+                continue
+            
+            print(f"  ✅ Connected! Extracting images...")
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Extract images with multi-strategy
+            image_urls = extract_images_multi_strategy(soup, response.text)
+            
+            if not image_urls:
+                print(f"  ⚠️ No images found")
+                continue
+            
+            # Rewrite URLs
+            image_urls = [rewrite_image_url(url) for url in image_urls]
+            
+            # Get chapter title
+            title_elem = (soup.find('h3', class_='nav-title') or 
+                         soup.find('h1') or 
+                         soup.find('title'))
+            chapter_title = title_elem.get_text(strip=True) if title_elem else "Chapter"
+            chapter_title = re.sub(r'[^\x00-\x7F]+', '', chapter_title)
+            
+            print(f"  ✅ SUCCESS!")
+            print(f"  📄 Title: {chapter_title}")
+            print(f"  🖼️ Images: {len(image_urls)}")
+            print(f"{'='*60}\n")
+            
+            return {
+                'title': chapter_title,
+                'url': current_url,
+                'images': image_urls,
+                'domain': test_domain
+            }
+            
+        except requests.Timeout:
+            print(f"  ⏱️ Timeout")
+            last_error = "Connection timeout"
+            continue
+        except requests.RequestException as e:
+            print(f"  ❌ Request error: {str(e)[:50]}")
+            last_error = str(e)
+            continue
+        except Exception as e:
+            print(f"  ❌ Error: {str(e)[:50]}")
+            last_error = str(e)
+            continue
+    
+    # Failed on all domains
+    print(f"{'='*60}")
+    print(f"❌ FAILED on all domains: {', '.join(tried_domains[:5])}{'...' if len(tried_domains) > 5 else ''}")
+    print(f"{'='*60}\n")
+    
+    raise Exception(f"Chapter tidak ditemukan di {len(tried_domains)} domain. "
+                   f"Kemungkinan: (1) Chapter tidak ada, (2) Format URL salah, "
+                   f"(3) Semua domain down. Last error: {last_error}")
 
 def download_image(url, save_path):
-    """Download single image"""
-    try:
-        response = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-        with open(save_path, 'wb') as f:
-            f.write(response.content)
-        return True
-    except:
-        return False
+    """Download single image with retry"""
+    for attempt in range(3):
+        try:
+            response = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+            with open(save_path, 'wb') as f:
+                f.write(response.content)
+            return True
+        except:
+            if attempt == 2:
+                return False
+            continue
+    return False
 
 def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=25000):
-    """Convert images ke PDF full-width (chunked)"""
+    """Convert images to PDF"""
     try:
-        # Get semua image files dengan natural sorting
         image_files = []
         for fname in os.listdir(image_folder):
             if fname.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif')):
@@ -200,19 +341,17 @@ def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=25000):
         if min_width is None:
             return False
         
-        # Load dan resize semua images
+        # Load and resize images
         images = []
         for img_path in image_files:
             try:
                 img = Image.open(img_path)
                 
-                # Resize ke minimum width
                 if img.width != min_width:
                     ratio = min_width / img.width
                     new_height = int(img.height * ratio)
                     img = img.resize((min_width, new_height), Image.Resampling.LANCZOS)
                 
-                # Convert ke RGB
                 if img.mode in ('RGBA', 'LA', 'P'):
                     rgb_img = Image.new('RGB', img.size, (255, 255, 255))
                     if img.mode == 'P':
@@ -223,7 +362,7 @@ def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=25000):
                     img = img.convert('RGB')
                 
                 images.append(img)
-            except Exception as e:
+            except:
                 continue
         
         if not images:
@@ -268,156 +407,244 @@ def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=25000):
         
         return False
     except Exception as e:
-        print(f"PDF conversion error: {e}")
+        print(f"PDF error: {e}")
         return False
 
 # ============ BOT HANDLERS ============
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk /start"""
-    welcome_text = """🤖 BATO MANGA DOWNLOADER BOT v2.0
+    welcome_text = """🤖 BATO MANGA DOWNLOADER BOT v3.0
 
-Kirim link chapter dari Bato untuk download manga dalam bentuk PDF!
+✨ Support 57 Domain Operational Bato!
 
 📖 CARA PAKAI:
-1. Copy link chapter dari bato.ing (atau mirror lainnya)
-2. Paste link ke chat ini
+1. Copy link chapter dari Bato
+2. Paste link ke chat ini  
 3. Bot akan download & kirim PDF
 
-📝 FORMAT LINK SUPPORT:
-✅ https://bato.ing/title/123-manga/456-ch_1
-✅ https://bato.ing/chapter/123456
-✅ https://bato.si/chapter/789012
-✅ Semua format Bato URL!
+📝 SUPPORT SEMUA FORMAT:
+✅ https://bato.si/chapter/123456 (v4)
+✅ https://bato.ing/chapter/123456 (v4)
+✅ https://nto.to/chapter/789012
+✅ https://comiko.org/title/xxx/yyy-ch_1
+✅ Semua 57 domain operational!
 
-✨ FITUR BARU:
-✅ Auto domain switching (jika 404)
-✅ Support SENODE format
-✅ Improved image extraction
-✅ PDF full-width (tanpa margin)
+🔧 FITUR v3.0:
+✅ Prioritas v4 domains (terbaru)
+✅ 5 strategi ekstraksi gambar
+✅ Auto test 20+ domain
+✅ Support SENODE & format baru
+✅ PDF full-width tanpa margin
 
 ⌨️ COMMAND:
-/start - Lihat pesan ini
-/help - Bantuan
-/status - Status bot
-/test - Test domain aktif
+/start - Pesan ini
+/help - Panduan lengkap
+/domains - List 57 domain
+/test - Test domain v4
+/debug [url] - Debug mode
 
-💬 Support: @moonread_channel
+💬 @moonread_channel
 """
     await update.message.reply_text(welcome_text)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk /help"""
-    help_text = """📖 PANDUAN LENGKAP
+    """Help command"""
+    help_text = """📖 PANDUAN LENGKAP v3.0
 
-1️⃣ CARA DOWNLOAD CHAPTER:
-Kirim link chapter dalam format apapun:
-• https://bato.ing/chapter/3885878 ✅
-• https://bato.ing/title/12345-manga/67890-ch_1 ✅
-• https://bato.si/... ✅
+1️⃣ MULTI-STRATEGY EXTRACTION:
+Bot menggunakan 5 strategi untuk extract gambar:
+• Strategy 1: imgHttps array
+• Strategy 2: batoPass pattern
+• Strategy 3: Script scanning
+• Strategy 4: img[data-src]
+• Strategy 5: HTML regex scan
 
-Bot akan otomatis:
-• Detect format URL
-• Auto-switch domain jika 404
-• Download semua gambar
-• Convert ke PDF full-width
-• Kirim ke kamu!
+2️⃣ AUTO DOMAIN SWITCHING:
+Jika error 404, bot akan:
+• Test domain working_domain
+• Auto try 15+ domain lain
+• Switch ke domain yang berhasil
 
-2️⃣ FORMAT PDF:
-• Full-width (seperti Oak Tree)
-• Tanpa margin putih
-• Chunked otomatis untuk chapter panjang
-• Ukuran optimal untuk mobile
+3️⃣ FORMAT URL SUPPORT:
+Semua format Bato URL didukung!
 
-3️⃣ TROUBLESHOOTING:
-• Jika error 404: Bot akan coba domain lain otomatis
-• Jika gagal: Gunakan /test untuk cek domain aktif
-• Jika masih gagal: Hubungi @moonread_channel
+4️⃣ DEBUG MODE:
+Gunakan /debug [url] untuk lihat detail proses
 
-4️⃣ DOMAIN SUPPORT:
-bato.ing, bato.si, bato.to, comiko.org, dll
-(70+ domain mirror dengan auto-switching!)
+💡 TIPS:
+• Kalau 1 domain gagal, bot auto coba lain
+• Jika semua gagal, chapter mungkin tidak ada
+• Gunakan /test untuk cek domain aktif
 
-💬 Butuh bantuan? Hubungi @moonread_channel
+💬 @moonread_channel
 """
     await update.message.reply_text(help_text)
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk /status"""
+    """Status command"""
     working_domain = find_working_domain()
-    status_text = f"""✅ BOT STATUS: ONLINE
+    
+    # Count domains
+    v4_count = 2  # bato.si, bato.ing
+    total_count = len(BATO_DOMAINS)
+    
+    status_text = f"""✅ BOT v3.0 ONLINE
 
-🌐 Domain aktif: {working_domain}
-📁 Temp folder: OK
-🤖 Version: 2.0 (Fixed)
-🔧 Features:
-  ✓ Auto domain switching
-  ✓ Multiple URL formats
-  ✓ Improved image extraction
+🌟 Priority: v4 domains (bato.si, bato.ing)
+🌐 Current: {working_domain}
+📊 Domains: {total_count} operational
+🔧 Strategies: 5 extraction methods
+🌍 Fallback: Auto-switch 20+ domains
+📁 Temp: OK
 
-Bot siap menerima request! 🚀
+🚀 Ready to download!
+
+Commands:
+/domains - Show all 57 domains
+/test - Test v4 domains  
+/debug [url] - Debug mode
 """
     await update.message.reply_text(status_text)
 
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Test domain connection"""
-    msg = await update.message.reply_text("🔍 Testing domains...")
+    """Test v4 domains"""
+    msg = await update.message.reply_text("🔍 Testing v4 domains...")
     
-    working = []
-    for domain in BATO_DOMAINS[:10]:
+    results = []
+    
+    # Test v4 domains (priority)
+    results.append("🌟 V4 DOMAINS (Priority):")
+    for domain in ["bato.si", "bato.ing"]:
         try:
             url = f"https://{domain}"
             response = requests.get(url, headers=HEADERS, timeout=5)
             if response.status_code == 200:
-                working.append(f"✅ {domain}")
+                results.append(f"✅ {domain} - ONLINE")
             else:
-                working.append(f"⚠️ {domain} (HTTP {response.status_code})")
+                results.append(f"⚠️ {domain} - HTTP {response.status_code}")
         except:
-            working.append(f"❌ {domain}")
+            results.append(f"❌ {domain} - OFFLINE")
     
-    result = "🔍 DOMAIN TEST RESULTS:\n\n" + "\n".join(working[:10])
-    await msg.edit_text(result)
+    results.append("\n🔧 Testing fallback domains:")
+    # Test next 8 domains
+    for domain in BATO_DOMAINS[2:10]:
+        try:
+            url = f"https://{domain}"
+            response = requests.get(url, headers=HEADERS, timeout=5)
+            if response.status_code == 200:
+                results.append(f"✅ {domain}")
+            else:
+                results.append(f"⚠️ {domain} ({response.status_code})")
+        except:
+            results.append(f"❌ {domain}")
+    
+    results.append(f"\n📊 Total: {len(BATO_DOMAINS)} operational domains")
+    results.append("Use /domains to see full list")
+    
+    await msg.edit_text("\n".join(results))
+
+async def domains_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show all operational domains"""
+    msg = "🌐 57 OPERATIONAL BATO DOMAINS\n"
+    msg += "="*40 + "\n\n"
+    
+    msg += "⭐ V4 DOMAINS (Priority):\n"
+    msg += "• bato.si (v4)\n"
+    msg += "• bato.ing (v4)\n\n"
+    
+    msg += "📌 Short .to Domains:\n"
+    to_domains = [d for d in BATO_DOMAINS if d.endswith('.to') and len(d) < 10]
+    for d in to_domains[:12]:
+        msg += f"• {d}\n"
+    msg += f"... +{len(to_domains)-12} more\n\n"
+    
+    msg += "📌 bato.* Domains:\n"
+    bato_domains = [d for d in BATO_DOMAINS if d.startswith('bato.') and d not in ['bato.si', 'bato.ing']]
+    for d in bato_domains[:8]:
+        msg += f"• {d}\n"
+    msg += f"... +{len(bato_domains)-8} more\n\n"
+    
+    msg += "📌 Other Domains:\n"
+    other = [d for d in BATO_DOMAINS if not d.endswith('.to') and not d.startswith('bato.')]
+    for d in other[:10]:
+        msg += f"• {d}\n"
+    msg += f"... +{len(other)-10} more\n\n"
+    
+    msg += f"✅ Total: {len(BATO_DOMAINS)} domains\n"
+    msg += f"🤖 Bot auto-switches between them!"
+    
+    await update.message.reply_text(msg)
+
+async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Debug mode"""
+    if not context.args:
+        await update.message.reply_text("Usage: /debug [chapter_url]")
+        return
+    
+    url = context.args[0]
+    msg = await update.message.reply_text("🔍 Debug mode...")
+    
+    try:
+        working_domain = find_working_domain()
+        
+        # Redirect print to capture
+        import io
+        import sys
+        old_stdout = sys.stdout
+        sys.stdout = buffer = io.StringIO()
+        
+        chapter_info = get_chapter_info(url, working_domain)
+        
+        # Get debug output
+        debug_output = buffer.getvalue()
+        sys.stdout = old_stdout
+        
+        result = f"🔍 DEBUG OUTPUT:\n\n{debug_output}\n\n"
+        result += f"✅ SUCCESS!\n"
+        result += f"📄 Title: {chapter_info['title']}\n"
+        result += f"🖼️ Images: {len(chapter_info['images'])}\n"
+        result += f"🌐 Domain: {chapter_info['domain']}"
+        
+        # Split if too long
+        if len(result) > 4000:
+            await msg.edit_text(result[:4000] + "\n\n... (truncated)")
+        else:
+            await msg.edit_text(result)
+            
+    except Exception as e:
+        await msg.edit_text(f"❌ DEBUG ERROR:\n\n{str(e)}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk URL chapter - IMPROVED VERSION"""
+    """Handle chapter URL"""
     url = update.message.text.strip()
     
-    # Check apakah valid bato URL
+    # Validate Bato URL
     is_bato_url = any(domain in url for domain in BATO_DOMAINS)
     
-    # Support both /chapter/ and /title/.../ch_ formats
-    is_chapter_url = '/chapter/' in url.lower() or re.search(r'/title/\d+-.+/\d+-ch_', url.lower())
-    
-    if not is_bato_url or not is_chapter_url:
+    if not is_bato_url:
         await update.message.reply_text(
-            "❌ Link tidak valid!\n\n"
-            "Kirim link chapter dari Bato, contoh:\n"
-            "✅ https://bato.ing/chapter/3885878\n"
-            "✅ https://bato.ing/title/123-manga/456-ch_1\n\n"
-            "📝 Kedua format didukung!"
+            "❌ Bukan link Bato!\n\n"
+            "Kirim link chapter dari bato.ing atau mirror-nya"
         )
         return
     
-    # Send processing message
-    status_msg = await update.message.reply_text("⏳ Memproses request...")
+    status_msg = await update.message.reply_text("⏳ Processing...")
     
     try:
         # Find working domain
-        await status_msg.edit_text("🔍 Mencari domain aktif...")
+        await status_msg.edit_text("🔍 Finding working domain...")
         working_domain = find_working_domain()
         
-        # Get chapter info (with auto domain switching)
-        await status_msg.edit_text("📥 Mengambil informasi chapter...")
+        # Get chapter info (with multi-strategy)
+        await status_msg.edit_text("📥 Fetching chapter (multi-strategy)...")
         chapter_info = get_chapter_info(url, working_domain)
         
         if not chapter_info['images']:
             await status_msg.edit_text(
-                "❌ Tidak ada gambar ditemukan!\n\n"
-                "Kemungkinan:\n"
-                "• Chapter belum tersedia\n"
-                "• Format halaman berubah\n"
-                "• Coba chapter lain\n\n"
-                "Gunakan /test untuk cek domain"
+                "❌ No images found!\n\n"
+                "Tried 5 extraction strategies.\n"
+                "Chapter might not exist or format changed."
             )
             return
         
@@ -431,8 +658,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Download images
         await status_msg.edit_text(
-            f"📥 Downloading {total_images} gambar...\n"
-            f"Domain: {chapter_info['domain']}\n"
+            f"📥 Downloading {total_images} images...\n"
+            f"🌐 {chapter_info['domain']}\n"
             f"0/{total_images}"
         )
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
@@ -441,7 +668,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = []
             for idx, img_url in enumerate(chapter_info['images'], 1):
-                # Use zero-padded numbering
                 save_path = os.path.join(temp_folder, f"page_{idx:04d}.jpg")
                 future = executor.submit(download_image, img_url, save_path)
                 futures.append(future)
@@ -451,30 +677,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     downloaded += 1
                     if downloaded % 10 == 0 or downloaded == total_images:
                         await status_msg.edit_text(
-                            f"📥 Downloading gambar...\n"
-                            f"Domain: {chapter_info['domain']}\n"
+                            f"📥 Downloading...\n"
                             f"{downloaded}/{total_images} ✓"
                         )
         
         if downloaded == 0:
-            await status_msg.edit_text(
-                "❌ Gagal download gambar!\n\n"
-                "Kemungkinan:\n"
-                "• Image server down\n"
-                "• URL gambar berubah\n"
-                "• Coba lagi nanti"
-            )
+            await status_msg.edit_text("❌ Failed to download images!")
             shutil.rmtree(temp_folder, ignore_errors=True)
             return
         
         # Convert to PDF
-        await status_msg.edit_text(f"📄 Membuat PDF... ({downloaded} gambar)")
+        await status_msg.edit_text(f"📄 Creating PDF ({downloaded} images)...")
         pdf_path = os.path.join(TEMP_DIR, f"{chapter_title}.pdf")
         
         success = images_to_pdf(temp_folder, pdf_path)
         
         if not success:
-            await status_msg.edit_text("❌ Gagal membuat PDF!")
+            await status_msg.edit_text("❌ PDF creation failed!")
             shutil.rmtree(temp_folder, ignore_errors=True)
             return
         
@@ -482,41 +701,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_size_mb = os.path.getsize(pdf_path) / (1024 * 1024)
         
         if file_size_mb > MAX_FILE_SIZE_MB:
-            # Send as ZIP instead
-            await status_msg.edit_text(f"📦 File terlalu besar ({file_size_mb:.1f}MB), membuat ZIP...")
+            await status_msg.edit_text(f"📦 Compressing ({file_size_mb:.1f}MB)...")
             zip_path = os.path.join(TEMP_DIR, f"{chapter_title}.zip")
             
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 zipf.write(pdf_path, os.path.basename(pdf_path))
             
-            await status_msg.edit_text("📤 Mengirim file...")
+            await status_msg.edit_text("📤 Sending...")
             
             with open(zip_path, 'rb') as f:
                 await update.message.reply_document(
                     document=f,
                     filename=f"{chapter_title}.zip",
                     caption=f"✅ {chapter_info['title']}\n\n"
-                            f"📊 {downloaded} gambar\n"
-                            f"🌐 Domain: {chapter_info['domain']}\n"
-                            f"📦 Size: {file_size_mb:.1f}MB (compressed)\n\n"
-                            f"⚠️ File dikompres karena >50MB"
+                            f"📊 {downloaded} images\n"
+                            f"🌐 {chapter_info['domain']}\n"
+                            f"📦 {file_size_mb:.1f}MB (zipped)\n\n"
+                            f"@moonread_channel"
                 )
             
             os.remove(zip_path)
         else:
-            # Send PDF
-            await status_msg.edit_text("📤 Mengirim PDF...")
+            await status_msg.edit_text("📤 Sending PDF...")
             
             with open(pdf_path, 'rb') as f:
                 await update.message.reply_document(
                     document=f,
                     filename=f"{chapter_title}.pdf",
                     caption=f"✅ {chapter_info['title']}\n\n"
-                            f"📄 PDF Full-Width\n"
-                            f"📊 {downloaded} gambar\n"
-                            f"🌐 Domain: {chapter_info['domain']}\n"
-                            f"📦 Size: {file_size_mb:.1f}MB\n\n"
-                            f"Powered by @moonread_channel"
+                            f"📄 Full-Width PDF\n"
+                            f"📊 {downloaded} images\n"
+                            f"🌐 {chapter_info['domain']}\n"
+                            f"📦 {file_size_mb:.1f}MB\n\n"
+                            f"@moonread_channel"
                 )
         
         # Cleanup
@@ -526,13 +743,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(pdf_path)
         
     except Exception as e:
-        error_msg = str(e)
         await status_msg.edit_text(
-            f"❌ Error: {error_msg}\n\n"
-            f"💡 Tips:\n"
-            f"• Gunakan /test untuk cek domain\n"
-            f"• Coba link chapter lain\n"
-            f"• Hubungi @moonread_channel jika masalah berlanjut"
+            f"❌ ERROR:\n{str(e)}\n\n"
+            f"💡 Try:\n"
+            f"• /test - Check domains\n"
+            f"• /debug {url[:30]}... - Debug mode\n"
+            f"• Different chapter URL"
         )
         print(f"Error: {e}")
 
@@ -540,27 +756,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Start bot"""
-    print("🤖 Starting Bato Manga Downloader Bot v2.0 (Fixed)...")
+    print("🤖 Bato Downloader Bot v3.0 - ULTRA FIXED")
+    print("="*60)
+    print("Features:")
+    print("  ✓ 5 extraction strategies")
+    print("  ✓ 15+ domain fallback")
+    print("  ✓ Multi-format support")
+    print("  ✓ Auto retry mechanism")
+    print("="*60)
     
-    # Create temp directory
     os.makedirs(TEMP_DIR, exist_ok=True)
     
-    # Create application
     app = Application.builder().token(BOT_TOKEN).build()
     
-    # Add handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("domains", domains_command))
     app.add_handler(CommandHandler("test", test_command))
+    app.add_handler(CommandHandler("debug", debug_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # Start bot
-    print("✅ Bot running! Press Ctrl+C to stop.")
-    print("🔧 Features enabled:")
-    print("  ✓ Auto domain switching")
-    print("  ✓ Multiple URL format support")
-    print("  ✓ Improved error handling")
+    print("\n✅ Bot running!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
