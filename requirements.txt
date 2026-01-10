@@ -1,4 +1,8 @@
-python-telegram-bot==21.0.1
-requests==2.31.0
-beautifulsoup4==4.12.3
-Pillow==10.2.0
+# requirements.txt
+python-telegram-bot  # kalau kamu pakai ini
+requests
+beautifulsoup4
+pillow
+img2pdf              # ← tambahkan ini
+# tambahkan versi spesifik kalau mau, contoh:
+# img2pdf==0.5.1
