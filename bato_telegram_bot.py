@@ -10,6 +10,7 @@ import asyncio
 import shutil
 import json
 import threading
+import time
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from telegram.constants import ChatAction
@@ -316,8 +317,11 @@ def download_image(url, save_path):
             continue
     return False
 
-def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=25000, progress_callback=None):
-    """Convert images to PDF with progress tracking"""
+def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=15000, progress_callback=None):
+    """
+    Convert images to PDF with progress tracking
+    OPTIMIZED: Lower default chunk height for faster processing
+    """
     try:
         # STEP 1: Get files (5%)
         if progress_callback:
@@ -335,38 +339,55 @@ def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=25000, prog
         
         total_images = len(image_files)
         
-        # STEP 2: Find minimum width (10%)
+        # STEP 2: Quick width check (10%)
         if progress_callback:
             progress_callback(10, "Analyzing dimensions...")
         
         min_width = None
-        for img_path in image_files:
+        max_width = None
+        for img_path in image_files[:10]:  # Only check first 10 for speed
             try:
                 with Image.open(img_path) as img:
                     if min_width is None or img.width < min_width:
                         min_width = img.width
+                    if max_width is None or img.width > max_width:
+                        max_width = img.width
             except:
                 pass
         
         if min_width is None:
             return False
         
-        # STEP 3: Load and resize images (10% - 60%)
+        # OPTIMIZATION: If all images similar width (within 5%), skip resize
+        width_variance = abs(max_width - min_width) / min_width if min_width > 0 else 0
+        skip_resize = width_variance < 0.05
+        
+        if progress_callback:
+            if skip_resize:
+                progress_callback(12, f"Images uniform width ({min_width}px) - skipping resize")
+            else:
+                progress_callback(12, f"Width variance detected - will resize")
+        
+        # STEP 3: Load and process images (10% - 60%)
         images = []
         for idx, img_path in enumerate(image_files):
             # Calculate progress: 10% + (50% * progress)
-            current_progress = 10 + int(50 * (idx + 1) / total_images)
-            if progress_callback:
-                progress_callback(current_progress, f"Processing image {idx+1}/{total_images}...")
+            current_progress = 12 + int(48 * (idx + 1) / total_images)
+            
+            # Update every 10 images to reduce message spam
+            if progress_callback and (idx % 10 == 0 or idx == total_images - 1):
+                progress_callback(current_progress, f"Loading image {idx+1}/{total_images}...")
             
             try:
                 img = Image.open(img_path)
                 
-                if img.width != min_width:
+                # Only resize if needed
+                if not skip_resize and img.width != min_width:
                     ratio = min_width / img.width
                     new_height = int(img.height * ratio)
                     img = img.resize((min_width, new_height), Image.Resampling.LANCZOS)
                 
+                # Convert to RGB
                 if img.mode in ('RGBA', 'LA', 'P'):
                     rgb_img = Image.new('RGB', img.size, (255, 255, 255))
                     if img.mode == 'P':
@@ -377,7 +398,9 @@ def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=25000, prog
                     img = img.convert('RGB')
                 
                 images.append(img)
-            except:
+            except Exception as e:
+                if progress_callback:
+                    progress_callback(current_progress, f"Skipped corrupted image {idx+1}")
                 continue
         
         if not images:
@@ -403,16 +426,17 @@ def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=25000, prog
         if current_chunk:
             chunks.append(current_chunk)
         
-        # STEP 5: Stitch chunks (70% - 90%)
         if progress_callback:
-            progress_callback(70, f"Stitching {len(chunks)} chunks...")
+            avg_per_chunk = len(images) / len(chunks)
+            progress_callback(67, f"Created {len(chunks)} chunks (~{avg_per_chunk:.0f} imgs each)")
         
+        # STEP 5: Stitch chunks (70% - 90%)
         stitched_images = []
         for chunk_idx, chunk in enumerate(chunks):
             # Progress: 70% + (20% * progress)
             current_progress = 70 + int(20 * (chunk_idx + 1) / len(chunks))
             if progress_callback:
-                progress_callback(current_progress, f"Stitching chunk {chunk_idx+1}/{len(chunks)}...")
+                progress_callback(current_progress, f"Stitching chunk {chunk_idx+1}/{len(chunks)} ({len(chunk)} imgs)...")
             
             chunk_height = sum(img.height for img in chunk)
             stitched = Image.new('RGB', (min_width, chunk_height), (255, 255, 255))
@@ -441,6 +465,8 @@ def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=25000, prog
         return False
     except Exception as e:
         print(f"PDF error: {e}")
+        if progress_callback:
+            progress_callback(0, f"Error: {str(e)[:50]}")
         return False
 
 # ============ BOT HANDLERS ============
@@ -502,23 +528,29 @@ Jika error 404, bot akan:
 • Switch ke domain yang berhasil
 
 3️⃣ REAL-TIME PROGRESS:
-Bot menampilkan progress untuk:
 📥 Download: ▰▰▰▰▰▱▱▱▱▱ 50%
 📄 PDF Creation: 
-  ├─ Processing image 5/10...
-  └─ 10 images total
-📦 Compression: ▰▰▰▰▰▰▰▰▰▰ 100%
+  ├─ Loading image 15/50...
+  └─ 50 images total
 
-4️⃣ FORMAT URL SUPPORT:
-Semua format Bato URL didukung!
+⚡ OPTIMIZED PDF:
+• Chunk height: 15000px (lebih cepat!)
+• Skip resize jika width sama
+• Update setiap 10 gambar
+• Est. 0.3s per image
 
-5️⃣ DEBUG MODE:
-Gunakan /debug [url] untuk lihat detail proses
+⏱️ PERKIRAAN WAKTU:
+• 50 images → ~15 detik
+• 100 images → ~30 detik
+• 200 images → ~1 menit
+
+4️⃣ DEBUG MODE:
+/debug [url] - Lihat detail proses
 
 💡 TIPS:
-• Progress bar update setiap 5 gambar
-• PDF creation shows detailed steps
-• Jika stuck, tunggu atau restart bot
+• PDF progress update tiap 10 gambar
+• Jika >100 images, tunggu ~1 menit
+• Progress stuck? Bot masih bekerja!
 
 💬 @moonread_channel
 """
@@ -674,6 +706,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     status_msg = await update.message.reply_text("⏳ Processing...")
     
+    # Track total time
+    import time
+    start_time = time.time()
+    
     try:
         # Find working domain
         await status_msg.edit_text("🔍 Finding working domain...")
@@ -744,6 +780,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Convert to PDF with progress tracking
         pdf_path = os.path.join(TEMP_DIR, f"{chapter_title}.pdf")
         
+        # Estimate PDF time based on image count
+        estimated_seconds = downloaded * 0.3  # ~0.3s per image
+        est_minutes = int(estimated_seconds / 60)
+        est_text = f"~{est_minutes}min" if est_minutes > 0 else f"~{int(estimated_seconds)}s"
+        
+        await status_msg.edit_text(
+            f"📄 Creating PDF (0%)...\n"
+            f"├─ {downloaded} images\n"
+            f"└─ Est. time: {est_text}"
+        )
+        
         # Create a shared progress tracker
         import threading
         progress_data = {'percent': 0, 'message': 'Initializing...'}
@@ -756,8 +803,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 progress_data['message'] = message
         
         # Start PDF conversion in background
+        # OPTIMIZED: Use 15000px chunks instead of 25000px for faster processing
         pdf_thread = threading.Thread(
-            target=lambda: images_to_pdf(temp_folder, pdf_path, progress_callback=pdf_progress)
+            target=lambda: images_to_pdf(temp_folder, pdf_path, target_chunk_height=15000, progress_callback=pdf_progress)
         )
         pdf_thread.start()
         
@@ -791,6 +839,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Check file size
         file_size_mb = os.path.getsize(pdf_path) / (1024 * 1024)
         
+        # Calculate processing time
+        total_time = time.time() - start_time
+        time_text = f"{int(total_time)}s" if total_time < 60 else f"{int(total_time/60)}m {int(total_time%60)}s"
+        
         if file_size_mb > MAX_FILE_SIZE_MB:
             await status_msg.edit_text(
                 f"📦 Compressing... 0%\n"
@@ -820,7 +872,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     caption=f"✅ {chapter_info['title']}\n\n"
                             f"📊 {downloaded} images\n"
                             f"🌐 {chapter_info['domain']}\n"
-                            f"📦 {file_size_mb:.1f}MB (zipped)\n\n"
+                            f"📦 {file_size_mb:.1f}MB (zipped)\n"
+                            f"⏱️ Processed in {time_text}\n\n"
+                            f"⚠️ Compressed (>50MB limit)\n"
                             f"@moonread_channel"
                 )
             
@@ -836,7 +890,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             f"📄 Full-Width PDF\n"
                             f"📊 {downloaded} images\n"
                             f"🌐 {chapter_info['domain']}\n"
-                            f"📦 {file_size_mb:.1f}MB\n\n"
+                            f"📦 {file_size_mb:.1f}MB\n"
+                            f"⏱️ {time_text}\n\n"
                             f"@moonread_channel"
                 )
         
