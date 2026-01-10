@@ -1,8 +1,5 @@
-# requirements.txt
-python-telegram-bot  # kalau kamu pakai ini
+python-telegram-bot
 requests
 beautifulsoup4
 pillow
-img2pdf              # ← tambahkan ini
-# tambahkan versi spesifik kalau mau, contoh:
-# img2pdf==0.5.1
+img2pdf  # ← optional, tapi sangat direkomendasikan untuk mode 3
