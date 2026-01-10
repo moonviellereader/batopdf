@@ -9,6 +9,7 @@ import os
 import asyncio
 import shutil
 import json
+import threading
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from telegram.constants import ChatAction
@@ -315,9 +316,13 @@ def download_image(url, save_path):
             continue
     return False
 
-def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=25000):
-    """Convert images to PDF"""
+def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=25000, progress_callback=None):
+    """Convert images to PDF with progress tracking"""
     try:
+        # STEP 1: Get files (5%)
+        if progress_callback:
+            progress_callback(5, "Scanning images...")
+        
         image_files = []
         for fname in os.listdir(image_folder):
             if fname.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif')):
@@ -328,7 +333,12 @@ def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=25000):
         if not image_files:
             return False
         
-        # Find minimum width
+        total_images = len(image_files)
+        
+        # STEP 2: Find minimum width (10%)
+        if progress_callback:
+            progress_callback(10, "Analyzing dimensions...")
+        
         min_width = None
         for img_path in image_files:
             try:
@@ -341,9 +351,14 @@ def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=25000):
         if min_width is None:
             return False
         
-        # Load and resize images
+        # STEP 3: Load and resize images (10% - 60%)
         images = []
-        for img_path in image_files:
+        for idx, img_path in enumerate(image_files):
+            # Calculate progress: 10% + (50% * progress)
+            current_progress = 10 + int(50 * (idx + 1) / total_images)
+            if progress_callback:
+                progress_callback(current_progress, f"Processing image {idx+1}/{total_images}...")
+            
             try:
                 img = Image.open(img_path)
                 
@@ -368,7 +383,10 @@ def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=25000):
         if not images:
             return False
         
-        # Create chunks
+        # STEP 4: Create chunks (65%)
+        if progress_callback:
+            progress_callback(65, "Creating chunks...")
+        
         chunks = []
         current_chunk = []
         current_height = 0
@@ -385,9 +403,17 @@ def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=25000):
         if current_chunk:
             chunks.append(current_chunk)
         
-        # Create stitched images
+        # STEP 5: Stitch chunks (70% - 90%)
+        if progress_callback:
+            progress_callback(70, f"Stitching {len(chunks)} chunks...")
+        
         stitched_images = []
-        for chunk in chunks:
+        for chunk_idx, chunk in enumerate(chunks):
+            # Progress: 70% + (20% * progress)
+            current_progress = 70 + int(20 * (chunk_idx + 1) / len(chunks))
+            if progress_callback:
+                progress_callback(current_progress, f"Stitching chunk {chunk_idx+1}/{len(chunks)}...")
+            
             chunk_height = sum(img.height for img in chunk)
             stitched = Image.new('RGB', (min_width, chunk_height), (255, 255, 255))
             
@@ -398,11 +424,18 @@ def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=25000):
             
             stitched_images.append(stitched)
         
-        # Save as PDF
+        # STEP 6: Save as PDF (95%)
+        if progress_callback:
+            progress_callback(95, f"Saving PDF ({len(stitched_images)} pages)...")
+        
         if stitched_images:
             first_image = stitched_images[0]
             other_images = stitched_images[1:] if len(stitched_images) > 1 else []
             first_image.save(output_pdf_path, 'PDF', resolution=100.0, save_all=True, append_images=other_images)
+            
+            if progress_callback:
+                progress_callback(100, "PDF created!")
+            
             return True
         
         return False
@@ -431,10 +464,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ✅ Semua 57 domain operational!
 
 🔧 FITUR v3.0:
+✅ Real-time progress tracking
+  📥 Download: ▰▰▰▰▰▱▱▱▱▱ 50%
+  📄 PDF: Processing 5/10... 50%
 ✅ Prioritas v4 domains (terbaru)
 ✅ 5 strategi ekstraksi gambar
 ✅ Auto test 20+ domain
-✅ Support SENODE & format baru
 ✅ PDF full-width tanpa margin
 
 ⌨️ COMMAND:
@@ -463,19 +498,27 @@ Bot menggunakan 5 strategi untuk extract gambar:
 2️⃣ AUTO DOMAIN SWITCHING:
 Jika error 404, bot akan:
 • Test domain working_domain
-• Auto try 15+ domain lain
+• Auto try 20+ domain lain
 • Switch ke domain yang berhasil
 
-3️⃣ FORMAT URL SUPPORT:
+3️⃣ REAL-TIME PROGRESS:
+Bot menampilkan progress untuk:
+📥 Download: ▰▰▰▰▰▱▱▱▱▱ 50%
+📄 PDF Creation: 
+  ├─ Processing image 5/10...
+  └─ 10 images total
+📦 Compression: ▰▰▰▰▰▰▰▰▰▰ 100%
+
+4️⃣ FORMAT URL SUPPORT:
 Semua format Bato URL didukung!
 
-4️⃣ DEBUG MODE:
+5️⃣ DEBUG MODE:
 Gunakan /debug [url] untuk lihat detail proses
 
 💡 TIPS:
-• Kalau 1 domain gagal, bot auto coba lain
-• Jika semua gagal, chapter mungkin tidak ada
-• Gunakan /test untuk cek domain aktif
+• Progress bar update setiap 5 gambar
+• PDF creation shows detailed steps
+• Jika stuck, tunggu atau restart bot
 
 💬 @moonread_channel
 """
@@ -656,15 +699,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         temp_folder = os.path.join(TEMP_DIR, f"user_{user_id}_{chapter_title}")
         os.makedirs(temp_folder, exist_ok=True)
         
-        # Download images
+        # Download images with progress bar
         await status_msg.edit_text(
-            f"📥 Downloading {total_images} images...\n"
-            f"🌐 {chapter_info['domain']}\n"
-            f"0/{total_images}"
+            f"📥 Downloading {total_images} images... 0%\n"
+            f"▱▱▱▱▱▱▱▱▱▱ 0/{total_images}"
         )
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
         
         downloaded = 0
+        
+        def create_progress_bar(current, total, length=10):
+            """Create visual progress bar"""
+            filled = int(length * current / total)
+            bar = '▰' * filled + '▱' * (length - filled)
+            return bar
+        
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = []
             for idx, img_url in enumerate(chapter_info['images'], 1):
@@ -675,10 +724,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for future in futures:
                 if future.result():
                     downloaded += 1
-                    if downloaded % 10 == 0 or downloaded == total_images:
+                    
+                    # Calculate percentage
+                    percent = int(100 * downloaded / total_images)
+                    progress_bar = create_progress_bar(downloaded, total_images)
+                    
+                    # Update every 5 images or at completion
+                    if downloaded % 5 == 0 or downloaded == total_images:
                         await status_msg.edit_text(
-                            f"📥 Downloading...\n"
-                            f"{downloaded}/{total_images} ✓"
+                            f"📥 Downloading... {percent}%\n"
+                            f"{progress_bar} {downloaded}/{total_images}"
                         )
         
         if downloaded == 0:
@@ -686,11 +741,47 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             shutil.rmtree(temp_folder, ignore_errors=True)
             return
         
-        # Convert to PDF
-        await status_msg.edit_text(f"📄 Creating PDF ({downloaded} images)...")
+        # Convert to PDF with progress tracking
         pdf_path = os.path.join(TEMP_DIR, f"{chapter_title}.pdf")
         
-        success = images_to_pdf(temp_folder, pdf_path)
+        # Create a shared progress tracker
+        import threading
+        progress_data = {'percent': 0, 'message': 'Initializing...'}
+        progress_lock = threading.Lock()
+        
+        def pdf_progress(percent, message):
+            """Update progress data (thread-safe)"""
+            with progress_lock:
+                progress_data['percent'] = percent
+                progress_data['message'] = message
+        
+        # Start PDF conversion in background
+        pdf_thread = threading.Thread(
+            target=lambda: images_to_pdf(temp_folder, pdf_path, progress_callback=pdf_progress)
+        )
+        pdf_thread.start()
+        
+        # Update status message periodically
+        last_percent = 0
+        while pdf_thread.is_alive():
+            await asyncio.sleep(0.5)
+            with progress_lock:
+                current_percent = progress_data['percent']
+                current_msg = progress_data['message']
+            
+            # Only update if progress changed
+            if current_percent > last_percent:
+                last_percent = current_percent
+                await status_msg.edit_text(
+                    f"📄 Creating PDF... {current_percent}%\n"
+                    f"├─ {current_msg}\n"
+                    f"└─ {downloaded} images total"
+                )
+        
+        pdf_thread.join()
+        
+        # Check if PDF was created
+        success = os.path.exists(pdf_path)
         
         if not success:
             await status_msg.edit_text("❌ PDF creation failed!")
@@ -701,13 +792,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_size_mb = os.path.getsize(pdf_path) / (1024 * 1024)
         
         if file_size_mb > MAX_FILE_SIZE_MB:
-            await status_msg.edit_text(f"📦 Compressing ({file_size_mb:.1f}MB)...")
+            await status_msg.edit_text(
+                f"📦 Compressing... 0%\n"
+                f"▱▱▱▱▱▱▱▱▱▱\n"
+                f"Size: {file_size_mb:.1f}MB > 50MB limit"
+            )
             zip_path = os.path.join(TEMP_DIR, f"{chapter_title}.zip")
             
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                await status_msg.edit_text(
+                    f"📦 Compressing... 50%\n"
+                    f"▰▰▰▰▰▱▱▱▱▱\n"
+                    f"Creating archive..."
+                )
                 zipf.write(pdf_path, os.path.basename(pdf_path))
             
-            await status_msg.edit_text("📤 Sending...")
+            await status_msg.edit_text(
+                f"📦 Compressed! 100%\n"
+                f"▰▰▰▰▰▰▰▰▰▰\n"
+                f"📤 Sending..."
+            )
             
             with open(zip_path, 'rb') as f:
                 await update.message.reply_document(
@@ -759,10 +863,11 @@ def main():
     print("🤖 Bato Downloader Bot v3.0 - ULTRA FIXED")
     print("="*60)
     print("Features:")
+    print("  ✓ Real-time progress tracking (download & PDF)")
     print("  ✓ 5 extraction strategies")
-    print("  ✓ 15+ domain fallback")
+    print("  ✓ 57 operational domains")
+    print("  ✓ Auto domain switching")
     print("  ✓ Multi-format support")
-    print("  ✓ Auto retry mechanism")
     print("="*60)
     
     os.makedirs(TEMP_DIR, exist_ok=True)
@@ -777,7 +882,8 @@ def main():
     app.add_handler(CommandHandler("debug", debug_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("\n✅ Bot running!")
+    print("\n✅ Bot running with progress tracking!")
+    print("📊 Users will see detailed progress for all operations")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
