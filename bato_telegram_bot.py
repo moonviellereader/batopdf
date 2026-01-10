@@ -218,43 +218,41 @@ def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=25000):
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk /start"""
-    welcome_text = """
-🤖 **Bato Manga Downloader Bot**
+    welcome_text = """🤖 BATO MANGA DOWNLOADER BOT
 
 Kirim link chapter dari Bato untuk download manga dalam bentuk PDF!
 
-**Cara pakai:**
-1️⃣ Copy link chapter dari bato.ing (atau mirror lainnya)
-2️⃣ Paste link ke chat ini
-3️⃣ Bot akan download & kirim PDF
+📖 CARA PAKAI:
+1. Copy link chapter dari bato.ing (atau mirror lainnya)
+2. Paste link ke chat ini
+3. Bot akan download & kirim PDF
 
-**Contoh link:**
-• `https://bato.ing/title/123456-manga-name/123457-ch_1`
-• `https://bato.si/chapter/789012`
+📝 CONTOH LINK:
+https://bato.ing/title/123456-manga-name/123457-ch_1
+https://bato.si/chapter/789012
 
-**Fitur:**
+✨ FITUR:
 ✅ Support semua domain Bato
 ✅ PDF full-width (tanpa margin)
 ✅ Auto chunked untuk chapter panjang
 ✅ Gratis & cepat!
 
-**Command:**
+⌨️ COMMAND:
 /start - Lihat pesan ini
 /help - Bantuan
 /status - Status bot
 
-**Support:** @moonread_channel
+💬 Support: @moonread_channel
 """
-    await update.message.reply_text(welcome_text, parse_mode='Markdown')
+    await update.message.reply_text(welcome_text)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk /help"""
-    help_text = """
-📖 **PANDUAN LENGKAP**
+    help_text = """📖 PANDUAN LENGKAP
 
-**1. Cara Download Chapter:**
+1️⃣ CARA DOWNLOAD CHAPTER:
 Kirim link chapter, contoh:
-`https://bato.ing/title/12345-manga/67890-ch_1`
+https://bato.ing/title/12345-manga/67890-ch_1
 
 Bot akan otomatis:
 • Cek domain yang aktif
@@ -262,38 +260,36 @@ Bot akan otomatis:
 • Convert ke PDF full-width
 • Kirim ke kamu!
 
-**2. Format PDF:**
+2️⃣ FORMAT PDF:
 • Full-width (seperti Oak Tree)
 • Tanpa margin putih
 • Chunked otomatis untuk chapter panjang
 • Ukuran optimal untuk mobile
 
-**3. Batasan:**
+3️⃣ BATASAN:
 • Max 50MB per file (limit Telegram)
 • Jika lebih, akan dikirim sebagai ZIP
 
-**4. Domain Support:**
+4️⃣ DOMAIN SUPPORT:
 bato.ing, bato.si, bato.to, comiko.org, dll
 (70+ domain mirror!)
 
-**Butuh bantuan?**
-Hubungi @moonread_channel
+💬 Butuh bantuan? Hubungi @moonread_channel
 """
-    await update.message.reply_text(help_text, parse_mode='Markdown')
+    await update.message.reply_text(help_text)
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk /status"""
     working_domain = find_working_domain()
-    status_text = f"""
-✅ **Bot Status: ONLINE**
+    status_text = f"""✅ BOT STATUS: ONLINE
 
-🌐 Domain aktif: `{working_domain}`
+🌐 Domain aktif: {working_domain}
 📁 Temp folder: OK
 🤖 Version: 1.0
 
 Bot siap menerima request! 🚀
 """
-    await update.message.reply_text(status_text, parse_mode='Markdown')
+    await update.message.reply_text(status_text)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk URL chapter"""
@@ -305,8 +301,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "❌ Link tidak valid!\n\n"
             "Kirim link chapter dari Bato, contoh:\n"
-            "`https://bato.ing/title/123456-manga/123457-ch_1`",
-            parse_mode='Markdown'
+            "https://bato.ing/title/123456-manga/123457-ch_1"
         )
         return
     
