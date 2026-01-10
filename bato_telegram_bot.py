@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Bato Manga Downloader Telegram Bot - ULTRA FIXED VERSION
+Bato Manga Downloader Telegram Bot v3.1 - WITH STITCHING MODES
 Support SENODE dan semua format URL Bato
 Multi-strategy image extraction
+3 Stitching modes: Normal, Short, Skip
 """
 
 import os
@@ -34,6 +35,17 @@ REQUEST_TIMEOUT = 15
 MAX_WORKERS = 6
 TEMP_DIR = "temp_downloads"
 MAX_FILE_SIZE_MB = 50
+
+# STITCHING MODES - User configurable
+STITCH_MODES = {
+    'normal': {'height': 15000, 'desc': 'Normal (15000px chunks)', 'emoji': '📄'},
+    'short': {'height': 5000, 'desc': 'Short (5000px chunks - faster!)', 'emoji': '⚡'},
+    'skip': {'height': 0, 'desc': 'Skip (No stitching - fastest!)', 'emoji': '🚀'}
+}
+DEFAULT_STITCH_MODE = 'normal'
+
+# User preferences storage (in-memory)
+user_preferences = {}
 
 # ALL BATO MIRROR DOMAINS (PRIORITIZED - Updated Jan 2025)
 # v4 domains first (newest), then operational domains
@@ -320,7 +332,8 @@ def download_image(url, save_path):
 def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=15000, progress_callback=None):
     """
     Convert images to PDF with progress tracking
-    OPTIMIZED: Lower default chunk height for faster processing
+    OPTIMIZED: Supports variable chunk heights and skip mode
+    target_chunk_height = 0 means skip stitching (1 image = 1 page)
     """
     try:
         # STEP 1: Get files (5%)
@@ -339,6 +352,55 @@ def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=15000, prog
         
         total_images = len(image_files)
         
+        # SKIP MODE: No stitching, direct conversion
+        if target_chunk_height == 0:
+            if progress_callback:
+                progress_callback(10, f"Skip mode: Converting {total_images} images directly...")
+            
+            # Load all images directly
+            pdf_images = []
+            for idx, img_path in enumerate(image_files):
+                current_progress = 10 + int(85 * (idx + 1) / total_images)
+                
+                if progress_callback and (idx % 10 == 0 or idx == total_images - 1):
+                    progress_callback(current_progress, f"Loading {idx+1}/{total_images}...")
+                
+                try:
+                    img = Image.open(img_path)
+                    
+                    # Convert to RGB
+                    if img.mode in ('RGBA', 'LA', 'P'):
+                        rgb_img = Image.new('RGB', img.size, (255, 255, 255))
+                        if img.mode == 'P':
+                            img = img.convert('RGBA')
+                        rgb_img.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
+                        img = rgb_img
+                    elif img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    
+                    pdf_images.append(img)
+                except Exception as e:
+                    if progress_callback:
+                        progress_callback(current_progress, f"Skipped corrupted image {idx+1}")
+                    continue
+            
+            if not pdf_images:
+                return False
+            
+            # Save directly as PDF
+            if progress_callback:
+                progress_callback(95, f"Saving {len(pdf_images)} pages...")
+            
+            first_image = pdf_images[0]
+            other_images = pdf_images[1:] if len(pdf_images) > 1 else []
+            first_image.save(output_pdf_path, 'PDF', resolution=100.0, save_all=True, append_images=other_images)
+            
+            if progress_callback:
+                progress_callback(100, f"Skip mode complete! {len(pdf_images)} pages")
+            
+            return True
+        
+        # NORMAL/SHORT MODE: Stitching with chunks
         # STEP 2: Quick width check (10%)
         if progress_callback:
             progress_callback(10, "Analyzing dimensions...")
@@ -473,7 +535,7 @@ def images_to_pdf(image_folder, output_pdf_path, target_chunk_height=15000, prog
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk /start"""
-    welcome_text = """🤖 BATO MANGA DOWNLOADER BOT v3.0
+    welcome_text = """🤖 BATO MANGA DOWNLOADER BOT v3.1
 
 ✨ Support 57 Domain Operational Bato!
 
@@ -489,10 +551,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ✅ https://comiko.org/title/xxx/yyy-ch_1
 ✅ Semua 57 domain operational!
 
-🔧 FITUR v3.0:
+🔧 FITUR v3.1:
 ✅ Real-time progress tracking
   📥 Download: ▰▰▰▰▰▱▱▱▱▱ 50%
   📄 PDF: Processing 5/10... 50%
+✅ Stitching modes (NEW!)
+  • Normal: 15000px chunks
+  • Short: 5000px chunks (fast!)
+  • Skip: No stitching (fastest!)
 ✅ Prioritas v4 domains (terbaru)
 ✅ 5 strategi ekstraksi gambar
 ✅ Auto test 20+ domain
@@ -501,6 +567,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ⌨️ COMMAND:
 /start - Pesan ini
 /help - Panduan lengkap
+/mode - Pilih stitching mode
 /domains - List 57 domain
 /test - Test domain v4
 /debug [url] - Debug mode
@@ -511,9 +578,33 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Help command"""
-    help_text = """📖 PANDUAN LENGKAP v3.0
+    help_text = """📖 PANDUAN LENGKAP v3.1
 
-1️⃣ MULTI-STRATEGY EXTRACTION:
+1️⃣ STITCHING MODES (NEW!):
+Gunakan /mode untuk pilih mode:
+
+📄 Normal (default):
+  • Chunks: 15000px
+  • Speed: Medium
+  • Best for: Most chapters
+
+⚡ Short:
+  • Chunks: 5000px
+  • Speed: Fast!
+  • Best for: 100+ images
+
+🚀 Skip:
+  • No stitching!
+  • Speed: Super fast!
+  • Best for: 200+ images
+  • Result: 1 image = 1 PDF page
+
+💡 Perbandingan waktu (100 images):
+  • Normal: ~30s
+  • Short: ~15s
+  • Skip: ~5s (langsung!)
+
+2️⃣ MULTI-STRATEGY EXTRACTION:
 Bot menggunakan 5 strategi untuk extract gambar:
 • Strategy 1: imgHttps array
 • Strategy 2: batoPass pattern
@@ -521,35 +612,25 @@ Bot menggunakan 5 strategi untuk extract gambar:
 • Strategy 4: img[data-src]
 • Strategy 5: HTML regex scan
 
-2️⃣ AUTO DOMAIN SWITCHING:
+3️⃣ AUTO DOMAIN SWITCHING:
 Jika error 404, bot akan:
 • Test domain working_domain
 • Auto try 20+ domain lain
 • Switch ke domain yang berhasil
 
-3️⃣ REAL-TIME PROGRESS:
+4️⃣ REAL-TIME PROGRESS:
 📥 Download: ▰▰▰▰▰▱▱▱▱▱ 50%
 📄 PDF Creation: 
   ├─ Loading image 15/50...
   └─ 50 images total
 
-⚡ OPTIMIZED PDF:
-• Chunk height: 15000px (lebih cepat!)
-• Skip resize jika width sama
-• Update setiap 10 gambar
-• Est. 0.3s per image
-
-⏱️ PERKIRAAN WAKTU:
-• 50 images → ~15 detik
-• 100 images → ~30 detik
-• 200 images → ~1 menit
-
-4️⃣ DEBUG MODE:
+5️⃣ DEBUG MODE:
 /debug [url] - Lihat detail proses
 
 💡 TIPS:
+• Banyak gambar? Gunakan /mode → Skip
+• Mode Skip = 1 image/page (fastest!)
 • PDF progress update tiap 10 gambar
-• Jika >100 images, tunggu ~1 menit
 • Progress stuck? Bot masih bekerja!
 
 💬 @moonread_channel
@@ -564,7 +645,12 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     v4_count = 2  # bato.si, bato.ing
     total_count = len(BATO_DOMAINS)
     
-    status_text = f"""✅ BOT v3.0 ONLINE
+    # Get user mode
+    user_id = update.effective_user.id
+    current_mode = user_preferences.get(user_id, DEFAULT_STITCH_MODE)
+    mode_info = STITCH_MODES[current_mode]
+    
+    status_text = f"""✅ BOT v3.1 ONLINE
 
 🌟 Priority: v4 domains (bato.si, bato.ing)
 🌐 Current: {working_domain}
@@ -573,9 +659,13 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🌍 Fallback: Auto-switch 20+ domains
 📁 Temp: OK
 
+{mode_info['emoji']} Stitch Mode: {mode_info['desc']}
+(Change with /mode)
+
 🚀 Ready to download!
 
 Commands:
+/mode - Change stitch mode
 /domains - Show all 57 domains
 /test - Test v4 domains  
 /debug [url] - Debug mode
@@ -690,6 +780,62 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ DEBUG ERROR:\n\n{str(e)}")
 
+async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Change stitching mode"""
+    user_id = update.effective_user.id
+    current_mode = user_preferences.get(user_id, DEFAULT_STITCH_MODE)
+    
+    # If argument provided, set mode
+    if context.args:
+        mode_arg = context.args[0].lower()
+        if mode_arg in STITCH_MODES:
+            user_preferences[user_id] = mode_arg
+            mode_info = STITCH_MODES[mode_arg]
+            await update.message.reply_text(
+                f"✅ Mode changed!\n\n"
+                f"{mode_info['emoji']} {mode_info['desc']}\n\n"
+                f"Your next download will use this mode."
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ Invalid mode!\n\n"
+                f"Available: normal, short, skip"
+            )
+        return
+    
+    # Show menu
+    mode_text = "📄 STITCHING MODES\n"
+    mode_text += "="*40 + "\n\n"
+    
+    for mode_key, mode_data in STITCH_MODES.items():
+        is_current = "✅" if mode_key == current_mode else "  "
+        mode_text += f"{is_current} {mode_data['emoji']} {mode_data['desc']}\n"
+        
+        if mode_key == 'normal':
+            mode_text += "   • Chunks: 15000px\n"
+            mode_text += "   • Speed: Medium\n"
+            mode_text += "   • Best for: Most chapters\n"
+            mode_text += "   • 100 images: ~30s\n\n"
+        elif mode_key == 'short':
+            mode_text += "   • Chunks: 5000px\n"
+            mode_text += "   • Speed: Fast!\n"
+            mode_text += "   • Best for: 100+ images\n"
+            mode_text += "   • 100 images: ~15s\n\n"
+        elif mode_key == 'skip':
+            mode_text += "   • No stitching\n"
+            mode_text += "   • Speed: Super fast!\n"
+            mode_text += "   • 1 image = 1 PDF page\n"
+            mode_text += "   • Best for: 200+ images\n"
+            mode_text += "   • 100 images: ~5s\n\n"
+    
+    mode_text += "💡 To change mode:\n"
+    mode_text += "/mode normal\n"
+    mode_text += "/mode short\n"
+    mode_text += "/mode skip\n\n"
+    mode_text += f"Current: {STITCH_MODES[current_mode]['emoji']} {current_mode}"
+    
+    await update.message.reply_text(mode_text)
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle chapter URL"""
     url = update.message.text.strip()
@@ -780,13 +926,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Convert to PDF with progress tracking
         pdf_path = os.path.join(TEMP_DIR, f"{chapter_title}.pdf")
         
-        # Estimate PDF time based on image count
-        estimated_seconds = downloaded * 0.3  # ~0.3s per image
+        # Get user's stitch mode
+        user_id = update.effective_user.id
+        stitch_mode = user_preferences.get(user_id, DEFAULT_STITCH_MODE)
+        mode_info = STITCH_MODES[stitch_mode]
+        chunk_height = mode_info['height']
+        
+        # Estimate PDF time based on image count and mode
+        if chunk_height == 0:  # Skip mode
+            estimated_seconds = downloaded * 0.05  # ~0.05s per image (super fast)
+        elif chunk_height <= 5000:  # Short mode
+            estimated_seconds = downloaded * 0.15  # ~0.15s per image
+        else:  # Normal mode
+            estimated_seconds = downloaded * 0.3  # ~0.3s per image
+        
         est_minutes = int(estimated_seconds / 60)
         est_text = f"~{est_minutes}min" if est_minutes > 0 else f"~{int(estimated_seconds)}s"
         
         await status_msg.edit_text(
             f"📄 Creating PDF (0%)...\n"
+            f"├─ {mode_info['emoji']} Mode: {stitch_mode}\n"
             f"├─ {downloaded} images\n"
             f"└─ Est. time: {est_text}"
         )
@@ -803,9 +962,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 progress_data['message'] = message
         
         # Start PDF conversion in background
-        # OPTIMIZED: Use 15000px chunks instead of 25000px for faster processing
+        # Use user's preferred chunk height
         pdf_thread = threading.Thread(
-            target=lambda: images_to_pdf(temp_folder, pdf_path, target_chunk_height=15000, progress_callback=pdf_progress)
+            target=lambda: images_to_pdf(temp_folder, pdf_path, target_chunk_height=chunk_height, progress_callback=pdf_progress)
         )
         pdf_thread.start()
         
@@ -822,6 +981,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 last_percent = current_percent
                 await status_msg.edit_text(
                     f"📄 Creating PDF... {current_percent}%\n"
+                    f"├─ {mode_info['emoji']} {stitch_mode} mode\n"
                     f"├─ {current_msg}\n"
                     f"└─ {downloaded} images total"
                 )
@@ -887,11 +1047,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     document=f,
                     filename=f"{chapter_title}.pdf",
                     caption=f"✅ {chapter_info['title']}\n\n"
-                            f"📄 Full-Width PDF\n"
+                            f"📄 PDF ({mode_info['emoji']} {stitch_mode} mode)\n"
                             f"📊 {downloaded} images\n"
                             f"🌐 {chapter_info['domain']}\n"
                             f"📦 {file_size_mb:.1f}MB\n"
                             f"⏱️ {time_text}\n\n"
+                            f"💡 Change mode: /mode\n"
                             f"@moonread_channel"
                 )
         
@@ -915,10 +1076,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Start bot"""
-    print("🤖 Bato Downloader Bot v3.0 - ULTRA FIXED")
+    print("🤖 Bato Downloader Bot v3.1 - STITCHING MODES")
     print("="*60)
     print("Features:")
     print("  ✓ Real-time progress tracking (download & PDF)")
+    print("  ✓ 3 stitching modes (Normal/Short/Skip)")
     print("  ✓ 5 extraction strategies")
     print("  ✓ 57 operational domains")
     print("  ✓ Auto domain switching")
@@ -932,13 +1094,14 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("mode", mode_command))
     app.add_handler(CommandHandler("domains", domains_command))
     app.add_handler(CommandHandler("test", test_command))
     app.add_handler(CommandHandler("debug", debug_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("\n✅ Bot running with progress tracking!")
-    print("📊 Users will see detailed progress for all operations")
+    print("\n✅ Bot running with stitching modes!")
+    print("📊 Users can choose: Normal, Short, or Skip mode")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
